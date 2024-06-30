@@ -40,25 +40,19 @@ args = parser.parse_args()
 client = OpenAI(base_url=args.url, api_key=args.api, timeout=args.timeout)
 
 
-def get_completion(prompt: str):
+def get_completion(messages):
 	response = client.chat.completions.create(
 		model=args.model,
-		messages=[
-			{
-				"role": "system",
-				"content": "You are an knowledge expert, you are supposed to answer the multi-choice question to derive your final answer as `The answer is ...`.",
-			},
-			{"role": "user", "content": prompt},
-		],
-		temperature=0.1,
+		messages=messages,
+		temperature=0.0,
 		max_tokens=4096,
-		top_p=1,
+		top_p=1.0,
 		frequency_penalty=0,
 		presence_penalty=0,
 		stop=["Question:"],
 		timeout=args.timeout,
 	)
-	return response.choices[0].message.content
+	return response.choices[0].message.content.strip()
 
 
 def load_mmlu_pro():
@@ -96,11 +90,7 @@ def format_example(question, options, cot_content=""):
 	choice_map = "ABCDEFGHIJ"
 	for i, opt in enumerate(options):
 		example += "{}. {}\n".format(choice_map[i], opt)
-	if cot_content == "":
-		example += "Answer: "
-	else:
-		example += "Answer: " + cot_content + "\n\n"
-	return example
+	return example.strip(), cot_content.strip()
 
 
 def extract_answer(text):
@@ -130,26 +120,33 @@ def run_single_question(single_question, cot_examples_dict, exist_result, lock):
 	cot_examples = cot_examples_dict[category]
 	question = single_question["question"]
 	options = single_question["options"]
-	prompt = ""
+	messages=[
+		{
+			"role": "system",
+			"content": "As a knowledgeable expert, your task is to answer multiple-choice questions with only one correct answer. Clearly explain your thought process for each question, providing thorough, step-by-step reasoning to show how you arrive at the final answer. If none of the options perfectly match, select the one that is closest. It is crucial to conclude every response with the exact phrase and format: \"The answer is (X).\", where X represents the letter choice, even when choosing the closest option.",
+		},
+	]
 	for each in cot_examples:
-		prompt += format_example(each["question"], each["options"], each["cot_content"])
-	prompt += format_example(question, options).strip()
+		example, cot_content = format_example(each["question"], each["options"], each["cot_content"])
+		messages.append({"role": "user", "content": example})
+		messages.append({"role": "assistant", "content": cot_content})
+	example, cot_content = format_example(question, options)
+	messages.append({"role": "user", "content": example})
 	try:
-		response = get_completion(prompt)
-		if args.verbosity >= 3:
-			print("\nPrompt:", prompt)
-			print(f"\nResponse: {response.choices[0].message.content}")
-		if args.log:
-			with lock:
-				with codecs.open(log_path, "a", "utf-8") as file:
-					file.write(f"Prompt: {prompt}\n")
-					file.write(f"Response: {response}\n")
-					file.write(f"Answer Key: {single_question['answer']}\n")
-		prompt = response
+		response = get_completion(messages)
+		messages.append({"role": "assistant", "content": response})
 	except Exception as e:
 		print("error", e)
 		return None, None, exist
 	pred = extract_answer(response)
+	log_json  = {"id": q_id, "messages": messages, "pred":pred, "answer": single_question['answer']}
+	log_content = json.dumps(log_json, indent="\t")
+	if args.verbosity >= 3:
+		print("\n"+log_content)
+	if args.log:
+		with lock:
+			with codecs.open(log_path, "a", "utf-8") as file:
+				file.write(log_content+"\n")
 	return pred, response, exist
 
 
@@ -172,12 +169,12 @@ def update_result(output_res_path, lock):
 								x = random.randint(0, len(each["options"]) - 1)
 								if x == each["answer_index"]:
 									category_record[category]["corr"] += 1
+									if args.verbosity == 2:
+										print("random hit.")
 								else:
 									category_record[category]["wrong"] += 1
 							elif each["pred"] == each["answer"]:
 								category_record[category]["corr"] += 1
-								if args.verbosity == 2:
-									print("random hit.")
 							else:
 								category_record[category]["wrong"] += 1
 			success = True
