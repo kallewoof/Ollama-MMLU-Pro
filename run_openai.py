@@ -405,7 +405,7 @@ def save_summary(category_record, output_summary_path, lock, report=False):
 			print_score(
 				"Adjusted Score Without Random Guesses",
 				total_corr - random_corr,
-				total_wrong - random_wrong,
+				total_wrong,
 			)
 	with lock:
 		with open(output_summary_path, "w") as fo:
